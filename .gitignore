@@ -11,6 +11,7 @@ target-*/
 *.pdb
 
 .vscode
+/.idea
 
 # perf & flamegraph
 perf.data
@@ -29,3 +30,10 @@ musl_gcc
 
 # log
 easytier-panic.log
+
+# web
+node_modules
+
+.vite
+
+easytier-gui/src-tauri/*.dll

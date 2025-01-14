@@ -1,16 +1,15 @@
-import { setupLayouts } from 'virtual:generated-layouts'
-import { createRouter, createWebHistory } from 'vue-router/auto'
-
+import Aura from '@primevue/themes/aura'
 import PrimeVue from 'primevue/config'
 import ToastService from 'primevue/toastservice'
-import App from '~/App.vue'
 
+import { createRouter, createWebHistory } from 'vue-router/auto'
+import { routes } from 'vue-router/auto-routes'
+import App from '~/App.vue'
+import EasyTierFrontendLib, { I18nUtils } from 'easytier-frontend-lib'
+
+import { getAutoLaunchStatusAsync, loadAutoLaunchStatusAsync } from './modules/auto_launch'
 import '~/styles.css'
-import Aura from '@primevue/themes/aura'
-import 'primeicons/primeicons.css'
-import 'primeflex/primeflex.css'
-import { i18n, loadLanguageAsync } from '~/modules/i18n'
-import { loadAutoLaunchStatusAsync, getAutoLaunchStatusAsync } from './modules/auto_launch'
+import 'easytier-frontend-lib/style.css'
 
 if (import.meta.env.PROD) {
   document.addEventListener('keydown', (event) => {
@@ -18,8 +17,9 @@ if (import.meta.env.PROD) {
       event.key === 'F5'
       || (event.ctrlKey && event.key === 'r')
       || (event.metaKey && event.key === 'r')
-    )
+    ) {
       event.preventDefault()
+    }
   })
 
   document.addEventListener('contextmenu', (event) => {
@@ -28,29 +28,34 @@ if (import.meta.env.PROD) {
 }
 
 async function main() {
-  await loadLanguageAsync(localStorage.getItem('lang') || 'en')
+  await I18nUtils.loadLanguageAsync(localStorage.getItem('lang') || 'en')
   await loadAutoLaunchStatusAsync(getAutoLaunchStatusAsync())
 
   const app = createApp(App)
 
   const router = createRouter({
     history: createWebHistory(),
-    extendRoutes: routes => setupLayouts(routes),
+    routes,
   })
 
   app.use(router)
   app.use(createPinia())
-  app.use(i18n, { useScope: 'global' })
+  app.use(EasyTierFrontendLib)
+  // app.use(i18n, { useScope: 'global' })
   app.use(PrimeVue, {
     theme: {
       preset: Aura,
       options: {
-          prefix: 'p',
-          darkModeSelector: 'system',
-          cssLayer: false
-      }
-  }})
-  app.use(ToastService)
+        prefix: 'p',
+        darkModeSelector: 'system',
+        cssLayer: {
+          name: 'primevue',
+          order: 'tailwind-base, primevue, tailwind-utilities'
+        }
+      },
+    },
+  })
+  app.use(ToastService as any)
   app.mount('#app')
 }
 

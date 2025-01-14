@@ -1,3 +1,4 @@
+use cidr::Ipv4Inet;
 use core::panic;
 use crossbeam::atomic::AtomicCell;
 use dashmap::DashMap;
@@ -97,10 +98,55 @@ impl ProxyTcpStream {
     }
 }
 
+#[cfg(feature = "smoltcp")]
+struct SmolTcpListener {
+    listener_task: JoinSet<()>,
+    listen_count: usize,
+
+    stream_rx: mpsc::UnboundedReceiver<Result<(tokio_smoltcp::TcpStream, SocketAddr)>>,
+}
+
+#[cfg(feature = "smoltcp")]
+impl SmolTcpListener {
+    pub async fn new(net: Arc<Mutex<Option<Net>>>, listen_count: usize) -> Self {
+        let mut tasks = JoinSet::new();
+
+        let (tx, rx) = mpsc::unbounded_channel();
+        let locked_net = net.lock().await;
+        for _ in 0..listen_count {
+            let mut tcp = locked_net
+                .as_ref()
+                .unwrap()
+                .tcp_bind("0.0.0.0:8899".parse().unwrap())
+                .await
+                .unwrap();
+            let tx = tx.clone();
+            tasks.spawn(async move {
+                loop {
+                    tx.send(tcp.accept().await.map_err(|e| {
+                        anyhow::anyhow!("smol tcp listener accept failed: {:?}", e).into()
+                    }))
+                    .unwrap();
+                }
+            });
+        }
+
+        Self {
+            listener_task: tasks,
+            listen_count,
+            stream_rx: rx,
+        }
+    }
+
+    pub async fn accept(&mut self) -> Result<(tokio_smoltcp::TcpStream, SocketAddr)> {
+        self.stream_rx.recv().await.unwrap()
+    }
+}
+
 enum ProxyTcpListener {
     KernelTcpListener(TcpListener),
     #[cfg(feature = "smoltcp")]
-    SmolTcpListener(tokio_smoltcp::TcpListener),
+    SmolTcpListener(SmolTcpListener),
 }
 
 impl ProxyTcpListener {
@@ -216,6 +262,11 @@ impl NicPacketFilter for TcpProxy {
         let IpAddr::V4(ip) = nat_entry.dst.ip() else {
             panic!("v4 nat entry src ip is not v4");
         };
+
+        zc_packet
+            .mut_peer_manager_header()
+            .unwrap()
+            .set_no_proxy(true);
 
         let mut ip_packet = MutableIpv4Packet::new(zc_packet.mut_payload()).unwrap();
         ip_packet.set_source(ip);
@@ -370,8 +421,8 @@ impl TcpProxy {
                 ),
             );
             net.set_any_ip(true);
-            let tcp = net.tcp_bind("0.0.0.0:8899".parse().unwrap()).await?;
             self.smoltcp_net.lock().await.replace(net);
+            let tcp = SmolTcpListener::new(self.smoltcp_net.clone(), 64).await;
 
             self.enable_smoltcp
                 .store(true, std::sync::atomic::Ordering::Relaxed);
@@ -476,7 +527,8 @@ impl TcpProxy {
             tracing::warn!("set_nodelay failed, ignore it: {:?}", e);
         }
 
-        let nat_dst = if Some(nat_entry.dst.ip()) == global_ctx.get_ipv4().map(|ip| IpAddr::V4(ip))
+        let nat_dst = if Some(nat_entry.dst.ip())
+            == global_ctx.get_ipv4().map(|ip| IpAddr::V4(ip.address()))
         {
             format!("127.0.0.1:{}", nat_entry.dst.port())
                 .parse()
@@ -541,7 +593,10 @@ impl TcpProxy {
         {
             Some(Ipv4Addr::new(192, 88, 99, 254))
         } else {
-            self.global_ctx.get_ipv4()
+            self.global_ctx
+                .get_ipv4()
+                .as_ref()
+                .map(cidr::Ipv4Inet::address)
         }
     }
 
@@ -557,7 +612,7 @@ impl TcpProxy {
         let hdr = packet.peer_manager_header().unwrap();
         let is_exit_node = hdr.is_exit_node();
 
-        if hdr.packet_type != PacketType::Data as u8 {
+        if hdr.packet_type != PacketType::Data as u8 || hdr.is_no_proxy() {
             return None;
         };
 
@@ -571,7 +626,8 @@ impl TcpProxy {
         if !self.cidr_set.contains_v4(ipv4.get_destination())
             && !is_exit_node
             && !(self.global_ctx.no_tun()
-                && Some(ipv4.get_destination()) == self.global_ctx.get_ipv4())
+                && Some(ipv4.get_destination())
+                    == self.global_ctx.get_ipv4().as_ref().map(Ipv4Inet::address))
         {
             return None;
         }
@@ -581,12 +637,13 @@ impl TcpProxy {
         let ip_packet = Ipv4Packet::new(payload_bytes).unwrap();
         let tcp_packet = TcpPacket::new(ip_packet.payload()).unwrap();
 
-        let is_tcp_syn = tcp_packet.get_flags() & pnet::packet::tcp::TcpFlags::SYN != 0;
-        if is_tcp_syn {
-            let source_ip = ip_packet.get_source();
-            let source_port = tcp_packet.get_source();
-            let src = SocketAddr::V4(SocketAddrV4::new(source_ip, source_port));
+        let source_ip = ip_packet.get_source();
+        let source_port = tcp_packet.get_source();
+        let src = SocketAddr::V4(SocketAddrV4::new(source_ip, source_port));
 
+        let is_tcp_syn = tcp_packet.get_flags() & pnet::packet::tcp::TcpFlags::SYN != 0;
+        let is_tcp_ack = tcp_packet.get_flags() & pnet::packet::tcp::TcpFlags::ACK != 0;
+        if is_tcp_syn && !is_tcp_ack {
             let dest_ip = ip_packet.get_destination();
             let dest_port = tcp_packet.get_destination();
             let dst = SocketAddr::V4(SocketAddrV4::new(dest_ip, dest_port));
@@ -595,6 +652,9 @@ impl TcpProxy {
                 .syn_map
                 .insert(src, Arc::new(NatDstEntry::new(src, dst)));
             tracing::info!(src = ?src, dst = ?dst, old_entry = ?old_val, "tcp syn received");
+        } else if !self.addr_conn_map.contains_key(&src) && !self.syn_map.contains_key(&src) {
+            // if not in syn map and addr conn map, may forwarding n2n packet
+            return None;
         }
 
         let mut ip_packet = MutableIpv4Packet::new(payload_bytes).unwrap();

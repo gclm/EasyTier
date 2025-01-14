@@ -14,6 +14,11 @@ npm install -g pnpm
 ### For Desktop (Win/Mac/Linux)
 
 ```
+cd ../tauri-plugin-vpnservice
+pnpm install
+pnpm build
+
+cd ../easytier-gui
 pnpm install
 pnpm tauri build
 ```
@@ -33,7 +38,6 @@ rustup target add aarch64-linux-android
 
 install java 20
 ```
-
 
 Java version depend on gradle version specified in (easytier-gui\src-tauri\gen\android\build.gradle.kts)
 

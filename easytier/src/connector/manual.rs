@@ -11,7 +11,12 @@ use tokio::{
 use crate::{
     common::PeerId,
     peers::peer_conn::PeerConnId,
-    rpc as easytier_rpc,
+    proto::{
+        cli::{
+            ConnectorManageAction, ListConnectorResponse, ManageConnectorResponse, PeerConnInfo,
+        },
+        rpc_types::{self, controller::BaseController},
+    },
     tunnel::{IpVersion, TunnelConnector},
 };
 
@@ -23,9 +28,9 @@ use crate::{
     },
     connector::set_bind_addr_for_peer_connector,
     peers::peer_manager::PeerManager,
-    rpc::{
-        connector_manage_rpc_server::ConnectorManageRpc, Connector, ConnectorStatus,
-        ListConnectorRequest, ManageConnectorRequest,
+    proto::cli::{
+        Connector, ConnectorManageRpc, ConnectorStatus, ListConnectorRequest,
+        ManageConnectorRequest,
     },
     use_global_var,
 };
@@ -46,7 +51,7 @@ struct ConnectorManagerData {
     connectors: ConnectorMap,
     reconnecting: DashSet<String>,
     peer_manager: Arc<PeerManager>,
-    alive_conn_urls: Arc<Mutex<BTreeSet<String>>>,
+    alive_conn_urls: Arc<DashSet<String>>,
     // user removed connector urls
     removed_conn_urls: Arc<DashSet<String>>,
     net_ns: NetNS,
@@ -71,7 +76,7 @@ impl ManualConnectorManager {
                 connectors,
                 reconnecting: DashSet::new(),
                 peer_manager,
-                alive_conn_urls: Arc::new(Mutex::new(BTreeSet::new())),
+                alive_conn_urls: Arc::new(DashSet::new()),
                 removed_conn_urls: Arc::new(DashSet::new()),
                 net_ns: global_ctx.net_ns.clone(),
                 global_ctx,
@@ -80,7 +85,11 @@ impl ManualConnectorManager {
         };
 
         ret.tasks
-            .spawn(Self::conn_mgr_routine(ret.data.clone(), event_subscriber));
+            .spawn(Self::conn_mgr_reconn_routine(ret.data.clone()));
+        ret.tasks.spawn(Self::conn_mgr_handle_event_routine(
+            ret.data.clone(),
+            event_subscriber,
+        ));
 
         ret
     }
@@ -101,12 +110,18 @@ impl ManualConnectorManager {
         Ok(())
     }
 
-    pub async fn remove_connector(&self, url: &str) -> Result<(), Error> {
+    pub async fn remove_connector(&self, url: url::Url) -> Result<(), Error> {
         tracing::info!("remove_connector: {}", url);
-        if !self.list_connectors().await.iter().any(|x| x.url == url) {
+        let url = url.into();
+        if !self
+            .list_connectors()
+            .await
+            .iter()
+            .any(|x| x.url.as_ref() == Some(&url))
+        {
             return Err(Error::NotFound);
         }
-        self.data.removed_conn_urls.insert(url.into());
+        self.data.removed_conn_urls.insert(url.to_string());
         Ok(())
     }
 
@@ -133,7 +148,7 @@ impl ManualConnectorManager {
             ret.insert(
                 0,
                 Connector {
-                    url: conn_url,
+                    url: Some(conn_url.parse().unwrap()),
                     status: status.into(),
                 },
             );
@@ -150,7 +165,7 @@ impl ManualConnectorManager {
             ret.insert(
                 0,
                 Connector {
-                    url: conn_url,
+                    url: Some(conn_url.parse().unwrap()),
                     status: ConnectorStatus::Connecting.into(),
                 },
             );
@@ -159,10 +174,17 @@ impl ManualConnectorManager {
         ret
     }
 
-    async fn conn_mgr_routine(
+    async fn conn_mgr_handle_event_routine(
         data: Arc<ConnectorManagerData>,
         mut event_recv: Receiver<GlobalCtxEvent>,
     ) {
+        loop {
+            let event = event_recv.recv().await.expect("event_recv got error");
+            Self::handle_event(&event, &data).await;
+        }
+    }
+
+    async fn conn_mgr_reconn_routine(data: Arc<ConnectorManagerData>) {
         tracing::warn!("conn_mgr_routine started");
         let mut reconn_interval = tokio::time::interval(std::time::Duration::from_millis(
             use_global_var!(MANUAL_CONNECTOR_RECONNECT_INTERVAL_MS),
@@ -171,15 +193,6 @@ impl ManualConnectorManager {
 
         loop {
             tokio::select! {
-                event = event_recv.recv() => {
-                    if let Ok(event) = event {
-                        Self::handle_event(&event, data.clone()).await;
-                    } else {
-                        tracing::warn!(?event, "event_recv got error");
-                        panic!("event_recv got error, err: {:?}", event);
-                    }
-                }
-
                 _ = reconn_interval.tick() => {
                     let dead_urls = Self::collect_dead_conns(data.clone()).await;
                     if dead_urls.is_empty() {
@@ -210,17 +223,24 @@ impl ManualConnectorManager {
         }
     }
 
-    async fn handle_event(event: &GlobalCtxEvent, data: Arc<ConnectorManagerData>) {
+    async fn handle_event(event: &GlobalCtxEvent, data: &ConnectorManagerData) {
+        let need_add_alive = |conn_info: &PeerConnInfo| conn_info.is_client;
         match event {
             GlobalCtxEvent::PeerConnAdded(conn_info) => {
+                if !need_add_alive(conn_info) {
+                    return;
+                }
                 let addr = conn_info.tunnel.as_ref().unwrap().remote_addr.clone();
-                data.alive_conn_urls.lock().await.insert(addr);
+                data.alive_conn_urls.insert(addr.unwrap().to_string());
                 tracing::warn!("peer conn added: {:?}", conn_info);
             }
 
             GlobalCtxEvent::PeerConnRemoved(conn_info) => {
+                if !need_add_alive(conn_info) {
+                    return;
+                }
                 let addr = conn_info.tunnel.as_ref().unwrap().remote_addr.clone();
-                data.alive_conn_urls.lock().await.remove(&addr);
+                data.alive_conn_urls.remove(&addr.unwrap().to_string());
                 tracing::warn!("peer conn removed: {:?}", conn_info);
             }
 
@@ -252,13 +272,18 @@ impl ManualConnectorManager {
     async fn collect_dead_conns(data: Arc<ConnectorManagerData>) -> BTreeSet<String> {
         Self::handle_remove_connector(data.clone());
 
-        let curr_alive = data.alive_conn_urls.lock().await.clone();
         let all_urls: BTreeSet<String> = data
             .connectors
             .iter()
             .map(|x| x.key().clone().into())
             .collect();
-        &all_urls - &curr_alive
+        let mut ret = BTreeSet::new();
+        for url in all_urls.iter() {
+            if !data.alive_conn_urls.contains(url) {
+                ret.insert(url.clone());
+            }
+        }
+        ret
     }
 
     async fn conn_reconnect_with_ip_version(
@@ -272,12 +297,14 @@ impl ManualConnectorManager {
 
         connector.lock().await.set_ip_version(ip_version);
 
-        set_bind_addr_for_peer_connector(
-            connector.lock().await.as_mut(),
-            ip_version == IpVersion::V4,
-            &ip_collector,
-        )
-        .await;
+        if data.global_ctx.config.get_flags().bind_device {
+            set_bind_addr_for_peer_connector(
+                connector.lock().await.as_mut(),
+                ip_version == IpVersion::V4,
+                &ip_collector,
+            )
+            .await;
+        }
 
         data.global_ctx.issue_event(GlobalCtxEvent::Connecting(
             connector.lock().await.remote_url().clone(),
@@ -289,7 +316,7 @@ impl ManualConnectorManager {
         tracing::info!("reconnect get tunnel succ: {:?}", tunnel);
         assert_eq!(
             dead_url,
-            tunnel.info().unwrap().remote_addr,
+            tunnel.info().unwrap().remote_addr.unwrap().to_string(),
             "info: {:?}",
             tunnel.info()
         );
@@ -316,6 +343,7 @@ impl ManualConnectorManager {
             ip_versions.push(IpVersion::Both);
         } else {
             let addrs = u.socket_addrs(|| Some(1000))?;
+            tracing::info!(?addrs, ?dead_url, "get ip from url done");
             let mut has_ipv4 = false;
             let mut has_ipv6 = false;
             for addr in addrs {
@@ -370,45 +398,43 @@ impl ManualConnectorManager {
     }
 }
 
+#[derive(Clone)]
 pub struct ConnectorManagerRpcService(pub Arc<ManualConnectorManager>);
 
-#[tonic::async_trait]
+#[async_trait::async_trait]
 impl ConnectorManageRpc for ConnectorManagerRpcService {
+    type Controller = BaseController;
+
     async fn list_connector(
         &self,
-        _request: tonic::Request<ListConnectorRequest>,
-    ) -> Result<tonic::Response<easytier_rpc::ListConnectorResponse>, tonic::Status> {
-        let mut ret = easytier_rpc::ListConnectorResponse::default();
+        _: BaseController,
+        _request: ListConnectorRequest,
+    ) -> Result<ListConnectorResponse, rpc_types::error::Error> {
+        let mut ret = ListConnectorResponse::default();
         let connectors = self.0.list_connectors().await;
         ret.connectors = connectors;
-        Ok(tonic::Response::new(ret))
+        Ok(ret)
     }
 
     async fn manage_connector(
         &self,
-        request: tonic::Request<ManageConnectorRequest>,
-    ) -> Result<tonic::Response<easytier_rpc::ManageConnectorResponse>, tonic::Status> {
-        let req = request.into_inner();
-        let url = url::Url::parse(&req.url)
-            .map_err(|_| tonic::Status::invalid_argument("invalid url"))?;
-        if req.action == easytier_rpc::ConnectorManageAction::Remove as i32 {
-            self.0.remove_connector(url.path()).await.map_err(|e| {
-                tonic::Status::invalid_argument(format!("remove connector failed: {:?}", e))
-            })?;
-            return Ok(tonic::Response::new(
-                easytier_rpc::ManageConnectorResponse::default(),
-            ));
+        _: BaseController,
+        req: ManageConnectorRequest,
+    ) -> Result<ManageConnectorResponse, rpc_types::error::Error> {
+        let url: url::Url = req.url.ok_or(anyhow::anyhow!("url is empty"))?.into();
+        if req.action == ConnectorManageAction::Remove as i32 {
+            self.0
+                .remove_connector(url.clone())
+                .await
+                .with_context(|| format!("remove connector failed: {:?}", url))?;
+            return Ok(ManageConnectorResponse::default());
         } else {
             self.0
                 .add_connector_by_url(url.as_str())
                 .await
-                .map_err(|e| {
-                    tonic::Status::invalid_argument(format!("add connector failed: {:?}", e))
-                })?;
+                .with_context(|| format!("add connector failed: {:?}", url))?;
         }
-        Ok(tonic::Response::new(
-            easytier_rpc::ManageConnectorResponse::default(),
-        ))
+        Ok(ManageConnectorResponse::default())
     }
 }
 

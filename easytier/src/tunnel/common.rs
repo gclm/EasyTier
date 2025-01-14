@@ -16,10 +16,9 @@ use tokio_stream::StreamExt;
 use tokio_util::io::poll_write_buf;
 use zerocopy::FromBytes as _;
 
-use crate::{
-    rpc::TunnelInfo,
-    tunnel::packet_def::{ZCPacket, PEER_MANAGER_HEADER_SIZE},
-};
+use super::TunnelInfo;
+
+use crate::tunnel::packet_def::{ZCPacket, PEER_MANAGER_HEADER_SIZE};
 
 use super::{
     buf::BufList,
@@ -76,16 +75,10 @@ pin_project! {
         #[pin]
         reader: R,
         buf: BytesMut,
-        state: FrameReaderState,
         max_packet_size: usize,
         associate_data: Option<Box<dyn Any + Send + 'static>>,
+        error: Option<TunnelError>,
     }
-}
-
-// usize means the size remaining to read
-enum FrameReaderState {
-    ReadingHeader(usize),
-    ReadingBody(usize),
 }
 
 impl<R> FramedReader<R> {
@@ -101,9 +94,9 @@ impl<R> FramedReader<R> {
         FramedReader {
             reader,
             buf: BytesMut::with_capacity(max_packet_size),
-            state: FrameReaderState::ReadingHeader(4),
             max_packet_size,
             associate_data,
+            error: None,
         }
     }
 
@@ -147,9 +140,19 @@ where
         let mut self_mut = self.project();
 
         loop {
+            if let Some(e) = self_mut.error.as_ref() {
+                tracing::warn!("poll_next on a failed FramedReader, {:?}", e);
+                return Poll::Ready(None);
+            }
+
             while let Some(packet) =
                 Self::extract_one_packet(self_mut.buf, *self_mut.max_packet_size)
             {
+                if let Err(TunnelError::InvalidPacket(msg)) = packet.as_ref() {
+                    self_mut
+                        .error
+                        .replace(TunnelError::InvalidPacket(msg.clone()));
+                }
                 return Poll::Ready(Some(packet));
             }
 
@@ -505,8 +508,8 @@ pub mod tests {
             let ret = listener.accept().await.unwrap();
             println!("accept: {:?}", ret.info());
             assert_eq!(
-                ret.info().unwrap().local_addr,
-                listener.local_url().to_string()
+                url::Url::from(ret.info().unwrap().local_addr.unwrap()),
+                listener.local_url()
             );
             _tunnel_echo_server(ret, false).await
         });
@@ -515,8 +518,8 @@ pub mod tests {
         println!("connect: {:?}", tunnel.info());
 
         assert_eq!(
-            tunnel.info().unwrap().remote_addr,
-            connector.remote_url().to_string()
+            url::Url::from(tunnel.info().unwrap().remote_addr.unwrap()),
+            connector.remote_url(),
         );
 
         let (mut recv, mut send) = tunnel.split();
@@ -604,7 +607,7 @@ pub mod tests {
 
     pub fn enable_log() {
         let filter = tracing_subscriber::EnvFilter::builder()
-            .with_default_directive(tracing::level_filters::LevelFilter::DEBUG.into())
+            .with_default_directive(tracing::level_filters::LevelFilter::TRACE.into())
             .from_env()
             .unwrap()
             .add_directive("tarpc=error".parse().unwrap());

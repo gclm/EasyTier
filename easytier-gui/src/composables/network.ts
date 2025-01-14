@@ -1,6 +1,8 @@
-import { invoke } from "@tauri-apps/api/core"
+import type { NetworkTypes } from 'easytier-frontend-lib'
+import { invoke } from '@tauri-apps/api/core'
 
-import type { NetworkConfig, NetworkInstanceRunningInfo } from '~/types/network'
+type NetworkConfig = NetworkTypes.NetworkConfig
+type NetworkInstanceRunningInfo = NetworkTypes.NetworkInstanceRunningInfo
 
 export async function parseNetworkConfig(cfg: NetworkConfig) {
   return invoke<string>('parse_network_config', { cfg })
@@ -22,8 +24,8 @@ export async function getOsHostname() {
   return await invoke<string>('get_os_hostname')
 }
 
-export async function setAutoLaunchStatus(enable: boolean) {
-  return await invoke<boolean>('set_auto_launch_status', { enable })
+export async function isAutostart() {
+  return await invoke<boolean>('is_autostart')
 }
 
 export async function setLoggingLevel(level: string) {
@@ -32,4 +34,8 @@ export async function setLoggingLevel(level: string) {
 
 export async function setTunFd(instanceId: string, fd: number) {
   return await invoke('set_tun_fd', { instanceId, fd })
+}
+
+export async function getEasytierVersion() {
+  return await invoke<string>('easytier_version')
 }
