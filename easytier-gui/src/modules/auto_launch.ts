@@ -1,16 +1,26 @@
-import { setAutoLaunchStatus } from "~/composables/network"
+import { disable, enable, isEnabled } from '@tauri-apps/plugin-autostart'
 
-export async function loadAutoLaunchStatusAsync(enable: boolean): Promise<boolean> {
-    try {
-        const ret = await setAutoLaunchStatus(enable)
-        localStorage.setItem('auto_launch', JSON.stringify(ret))
-        return ret
-    } catch (e) {
-        console.error(e)
-        return false
+export async function loadAutoLaunchStatusAsync(target_enable: boolean): Promise<boolean> {
+  try {
+    if (target_enable) {
+      await enable()
     }
+    else {
+      // 消除没有配置自启动时进行关闭操作报错
+      try {
+        await disable()
+      }
+      catch { }
+    }
+    localStorage.setItem('auto_launch', JSON.stringify(await isEnabled()))
+    return isEnabled()
+  }
+  catch (e) {
+    console.error(e)
+    return false
+  }
 }
 
 export function getAutoLaunchStatusAsync(): boolean {
-    return localStorage.getItem('auto_launch') === 'true'
+  return localStorage.getItem('auto_launch') === 'true'
 }

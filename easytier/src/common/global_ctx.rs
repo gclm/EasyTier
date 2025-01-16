@@ -4,7 +4,8 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use crate::rpc::PeerConnInfo;
+use crate::proto::cli::PeerConnInfo;
+use crate::proto::common::PeerFeatureFlag;
 use crossbeam::atomic::AtomicCell;
 
 use super::{
@@ -29,6 +30,7 @@ pub enum GlobalCtxEvent {
 
     ListenerAdded(url::Url),
     ListenerAddFailed(url::Url, String), // (url, error message)
+    ListenerAcceptFailed(url::Url, String), // (url, error message)
     ConnectionAccepted(String, String),  // (local url, remote url)
     ConnectionError(String, String, String), // (local url, remote url, error message)
 
@@ -38,12 +40,12 @@ pub enum GlobalCtxEvent {
     VpnPortalClientConnected(String, String), // (portal, client ip)
     VpnPortalClientDisconnected(String, String), // (portal, client ip)
 
-    DhcpIpv4Changed(Option<std::net::Ipv4Addr>, Option<std::net::Ipv4Addr>), // (old, new)
-    DhcpIpv4Conflicted(Option<std::net::Ipv4Addr>),
+    DhcpIpv4Changed(Option<cidr::Ipv4Inet>, Option<cidr::Ipv4Inet>), // (old, new)
+    DhcpIpv4Conflicted(Option<cidr::Ipv4Inet>),
 }
 
-type EventBus = tokio::sync::broadcast::Sender<GlobalCtxEvent>;
-type EventBusSubscriber = tokio::sync::broadcast::Receiver<GlobalCtxEvent>;
+pub type EventBus = tokio::sync::broadcast::Sender<GlobalCtxEvent>;
+pub type EventBusSubscriber = tokio::sync::broadcast::Receiver<GlobalCtxEvent>;
 
 pub struct GlobalCtx {
     pub inst_name: String,
@@ -54,7 +56,7 @@ pub struct GlobalCtx {
 
     event_bus: EventBus,
 
-    cached_ipv4: AtomicCell<Option<std::net::Ipv4Addr>>,
+    cached_ipv4: AtomicCell<Option<cidr::Ipv4Inet>>,
     cached_proxy_cidrs: AtomicCell<Option<Vec<cidr::IpCidr>>>,
 
     ip_collector: Arc<IPCollector>,
@@ -67,6 +69,8 @@ pub struct GlobalCtx {
 
     enable_exit_node: bool,
     no_tun: bool,
+
+    feature_flags: AtomicCell<PeerFeatureFlag>,
 }
 
 impl std::fmt::Debug for GlobalCtx {
@@ -90,7 +94,7 @@ impl GlobalCtx {
         let net_ns = NetNS::new(config_fs.get_netns());
         let hostname = config_fs.get_hostname();
 
-        let (event_bus, _) = tokio::sync::broadcast::channel(100);
+        let (event_bus, _) = tokio::sync::broadcast::channel(1024);
 
         let stun_info_collection = Arc::new(StunInfoCollector::new_with_default_servers());
 
@@ -118,6 +122,8 @@ impl GlobalCtx {
 
             enable_exit_node,
             no_tun,
+
+            feature_flags: AtomicCell::new(PeerFeatureFlag::default()),
         }
     }
 
@@ -133,7 +139,21 @@ impl GlobalCtx {
         }
     }
 
-    pub fn get_ipv4(&self) -> Option<std::net::Ipv4Addr> {
+    pub fn check_network_in_whitelist(&self, network_name: &str) -> Result<(), anyhow::Error> {
+        if self
+            .get_flags()
+            .relay_network_whitelist
+            .split(" ")
+            .map(wildmatch::WildMatch::new)
+            .any(|wl| wl.matches(network_name))
+        {
+            Ok(())
+        } else {
+            Err(anyhow::anyhow!("network {} not in whitelist", network_name).into())
+        }
+    }
+
+    pub fn get_ipv4(&self) -> Option<cidr::Ipv4Inet> {
         if let Some(ret) = self.cached_ipv4.load() {
             return Some(ret);
         }
@@ -142,7 +162,7 @@ impl GlobalCtx {
         return addr;
     }
 
-    pub fn set_ipv4(&self, addr: Option<std::net::Ipv4Addr>) {
+    pub fn set_ipv4(&self, addr: Option<cidr::Ipv4Inet>) {
         self.config.set_ipv4(addr);
         self.cached_ipv4.store(None);
     }
@@ -178,6 +198,10 @@ impl GlobalCtx {
         self.config.get_network_identity()
     }
 
+    pub fn get_network_name(&self) -> String {
+        self.get_network_identity().network_name
+    }
+
     pub fn get_ip_collector(&self) -> Arc<IPCollector> {
         self.ip_collector.clone()
     }
@@ -190,7 +214,6 @@ impl GlobalCtx {
         self.stun_info_collection.as_ref()
     }
 
-    #[cfg(test)]
     pub fn replace_stun_info_collector(&self, collector: Box<dyn StunInfoCollectorTrait>) {
         // force replace the stun_info_collection without mut and drop the old one
         let ptr = &self.stun_info_collection as *const Box<dyn StunInfoCollectorTrait>;
@@ -207,7 +230,10 @@ impl GlobalCtx {
     }
 
     pub fn add_running_listener(&self, url: url::Url) {
-        self.running_listeners.lock().unwrap().push(url);
+        let mut l = self.running_listeners.lock().unwrap();
+        if !l.contains(&url) {
+            l.push(url);
+        }
     }
 
     pub fn get_vpn_portal_cidr(&self) -> Option<cidr::Ipv4Cidr> {
@@ -216,6 +242,10 @@ impl GlobalCtx {
 
     pub fn get_flags(&self) -> Flags {
         self.config.get_flags()
+    }
+
+    pub fn set_flags(&self, flags: Flags) {
+        self.config.set_flags(flags);
     }
 
     pub fn get_128_key(&self) -> [u8; 16] {
@@ -241,6 +271,14 @@ impl GlobalCtx {
 
     pub fn no_tun(&self) -> bool {
         self.no_tun
+    }
+
+    pub fn get_feature_flags(&self) -> PeerFeatureFlag {
+        self.feature_flags.load()
+    }
+
+    pub fn set_feature_flags(&self, flags: PeerFeatureFlag) {
+        self.feature_flags.store(flags);
     }
 }
 

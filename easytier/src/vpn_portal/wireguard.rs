@@ -1,6 +1,7 @@
 use std::{
     net::{Ipv4Addr, SocketAddr},
     sync::Arc,
+    time::Duration,
 };
 
 use anyhow::Context;
@@ -9,7 +10,7 @@ use cidr::Ipv4Inet;
 use dashmap::DashMap;
 use futures::StreamExt;
 use pnet::packet::ipv4::Ipv4Packet;
-use tokio::task::JoinSet;
+use tokio::{task::JoinSet, time::timeout};
 use tracing::Level;
 
 use crate::{
@@ -80,7 +81,7 @@ impl WireGuardImpl {
         wg_peer_ip_table: WgPeerIpTable,
     ) {
         let info = t.info().unwrap_or_default();
-        let mut mpsc_tunnel = MpscTunnel::new(t);
+        let mut mpsc_tunnel = MpscTunnel::new(t, None);
         let mut stream = mpsc_tunnel.get_stream();
         let mut ip_registered = false;
 
@@ -88,11 +89,29 @@ impl WireGuardImpl {
         peer_mgr
             .get_global_ctx()
             .issue_event(GlobalCtxEvent::VpnPortalClientConnected(
-                info.local_addr.clone(),
-                info.remote_addr.clone(),
+                info.local_addr.clone().unwrap_or_default().to_string(),
+                info.remote_addr.clone().unwrap_or_default().to_string(),
             ));
 
-        while let Some(Ok(msg)) = stream.next().await {
+        let mut map_key = None;
+
+        loop {
+            let msg = match timeout(Duration::from_secs(120), stream.next()).await {
+                Ok(Some(Ok(msg))) => msg,
+                Ok(Some(Err(err))) => {
+                    tracing::error!(?err, "Failed to receive from wg client");
+                    break;
+                }
+                Ok(None) => {
+                    tracing::info!("Wireguard client disconnected");
+                    break;
+                }
+                Err(err) => {
+                    tracing::error!(?err, "Timeout while receiving from wg client");
+                    break;
+                }
+            };
+
             assert_eq!(msg.packet_type(), ZCPacketType::WG);
             let inner = msg.inner();
             let Some(i) = Ipv4Packet::new(&inner) else {
@@ -101,9 +120,10 @@ impl WireGuardImpl {
             };
             if !ip_registered {
                 let client_entry = Arc::new(ClientEntry {
-                    endpoint_addr: remote_addr.parse().ok(),
+                    endpoint_addr: remote_addr.clone().map(Into::into),
                     sink: mpsc_tunnel.get_sink(),
                 });
+                map_key = Some(i.get_source());
                 wg_peer_ip_table.insert(i.get_source(), client_entry.clone());
                 ip_registered = true;
             }
@@ -114,11 +134,16 @@ impl WireGuardImpl {
                 .await;
         }
 
+        if map_key.is_some() {
+            tracing::info!(?map_key, "Removing wg client from table");
+            wg_peer_ip_table.remove(&map_key.unwrap());
+        }
+
         peer_mgr
             .get_global_ctx()
             .issue_event(GlobalCtxEvent::VpnPortalClientDisconnected(
-                info.local_addr,
-                info.remote_addr,
+                info.local_addr.unwrap_or_default().to_string(),
+                info.remote_addr.unwrap_or_default().to_string(),
             ));
     }
 
@@ -157,9 +182,15 @@ impl WireGuardImpl {
                     ZCPacketType::WG,
                 );
 
-                if let Err(ret) = entry.sink.send(packet).await {
-                    tracing::debug!(?ret, "Failed to send packet to wg client");
+                match entry.sink.try_send(packet) {
+                    Ok(_) => {
+                        tracing::trace!("Sent packet to wg client");
+                    }
+                    Err(e) => {
+                        tracing::debug!(?e, "Failed to send packet to wg client");
+                    }
                 }
+
                 None
             }
         }
@@ -253,13 +284,11 @@ impl VpnPortal for WireGuard {
             .collect::<Vec<_>>();
         for ipv4 in routes
             .iter()
-            .map(|x| x.ipv4_addr.clone())
-            .chain(global_ctx.get_ipv4().iter().map(|x| x.to_string()))
+            .filter(|x| x.ipv4_addr.is_some())
+            .map(|x| x.ipv4_addr.unwrap())
+            .chain(global_ctx.get_ipv4().into_iter().map(Into::into))
         {
-            let Ok(ipv4) = ipv4.parse() else {
-                continue;
-            };
-            let inet = Ipv4Inet::new(ipv4, 24).unwrap();
+            let inet = Ipv4Inet::from(ipv4);
             allow_ips.push(inet.network().to_string());
             break;
         }

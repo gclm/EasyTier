@@ -1,10 +1,5 @@
 #[cfg(target_os = "windows")]
-use std::{
-    env,
-    fs::File,
-    io::{copy, Cursor},
-    path::PathBuf,
-};
+use std::{env, io::Cursor, path::PathBuf};
 
 #[cfg(target_os = "windows")]
 struct WindowsBuild {}
@@ -46,8 +41,8 @@ impl WindowsBuild {
 
     fn download_protoc() -> PathBuf {
         println!("cargo:info=use exist protoc: {:?}", "k");
-        let out_dir = Self::get_cargo_target_dir().unwrap();
-        let fname = out_dir.join("protoc");
+        let out_dir = Self::get_cargo_target_dir().unwrap().join("protobuf");
+        let fname = out_dir.join("bin/protoc.exe");
         if fname.exists() {
             println!("cargo:info=use exist protoc: {:?}", fname);
             return fname;
@@ -65,17 +60,21 @@ impl WindowsBuild {
             .map(zip::ZipArchive::new)
             .unwrap()
             .unwrap();
-        let protoc_zipped_file = content.by_name("bin/protoc.exe").unwrap();
-        let mut content = protoc_zipped_file;
-
-        copy(&mut content, &mut File::create(&fname).unwrap()).unwrap();
+        content.extract(out_dir).unwrap();
 
         fname
     }
 
     pub fn check_for_win() {
         // add third_party dir to link search path
-        println!("cargo:rustc-link-search=native=easytier/third_party/");
+        let target = std::env::var("TARGET").unwrap_or_default();
+
+        if target.contains("x86_64") {
+            println!("cargo:rustc-link-search=native=easytier/third_party/");
+        } else if target.contains("aarch64") {
+            println!("cargo:rustc-link-search=native=easytier/third_party/arm64/");
+        }
+
         let protoc_path = if let Some(o) = Self::check_protoc_exist() {
             println!("cargo:info=use os exist protoc: {:?}", o);
             o
@@ -86,17 +85,81 @@ impl WindowsBuild {
     }
 }
 
+fn workdir() -> Option<String> {
+    if let Ok(cargo_manifest_dir) = std::env::var("CARGO_MANIFEST_DIR") {
+        return Some(cargo_manifest_dir);
+    }
+
+    let dest = std::env::var("OUT_DIR");
+    if dest.is_err() {
+        return None;
+    }
+    let dest = dest.unwrap();
+
+    let seperator = regex::Regex::new(r"(/target/(.+?)/build/)|(\\target\\(.+?)\\build\\)")
+        .expect("Invalid regex");
+    let parts = seperator.split(dest.as_str()).collect::<Vec<_>>();
+
+    if parts.len() >= 2 {
+        return Some(parts[0].to_string());
+    }
+
+    None
+}
+
+fn check_locale() {
+    let workdir = workdir().unwrap_or("./".to_string());
+
+    let locale_path = format!("{workdir}/**/locales/**/*");
+    if let Ok(globs) = globwalk::glob(locale_path) {
+        for entry in globs {
+            if let Err(e) = entry {
+                println!("cargo:i18n-error={}", e);
+                continue;
+            }
+
+            let entry = entry.unwrap().into_path();
+            println!("cargo:rerun-if-changed={}", entry.display());
+        }
+    }
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     #[cfg(target_os = "windows")]
     WindowsBuild::check_for_win();
 
-    tonic_build::configure()
-        .type_attribute(".", "#[derive(serde::Serialize, serde::Deserialize)]")
-        .type_attribute("cli.DirectConnectedPeerInfo", "#[derive(Hash)]")
-        .type_attribute("cli.PeerInfoForGlobalMap", "#[derive(Hash)]")
-        .btree_map(&["."])
-        .compile(&["proto/cli.proto"], &["proto/"])
+    let proto_files = [
+        "src/proto/peer_rpc.proto",
+        "src/proto/common.proto",
+        "src/proto/error.proto",
+        "src/proto/tests.proto",
+        "src/proto/cli.proto",
+        "src/proto/web.proto",
+    ];
+
+    for proto_file in &proto_files {
+        println!("cargo:rerun-if-changed={}", proto_file);
+    }
+
+    prost_build::Config::new()
+        .protoc_arg("--experimental_allow_proto3_optional")
+        .type_attribute(".common", "#[derive(serde::Serialize, serde::Deserialize)]")
+        .type_attribute(".error", "#[derive(serde::Serialize, serde::Deserialize)]")
+        .type_attribute(".cli", "#[derive(serde::Serialize, serde::Deserialize)]")
+        .type_attribute(".web", "#[derive(serde::Serialize, serde::Deserialize)]")
+        .type_attribute(
+            "peer_rpc.GetIpListResponse",
+            "#[derive(serde::Serialize, serde::Deserialize)]",
+        )
+        .type_attribute("peer_rpc.DirectConnectedPeerInfo", "#[derive(Hash)]")
+        .type_attribute("peer_rpc.PeerInfoForGlobalMap", "#[derive(Hash)]")
+        .type_attribute("peer_rpc.ForeignNetworkRouteInfoKey", "#[derive(Hash, Eq)]")
+        .type_attribute("common.RpcDescriptor", "#[derive(Hash, Eq)]")
+        .service_generator(Box::new(rpc_build::ServiceGenerator::new()))
+        .btree_map(["."])
+        .compile_protos(&proto_files, &["src/proto/"])
         .unwrap();
-    // tonic_build::compile_protos("proto/cli.proto")?;
+
+    check_locale();
     Ok(())
 }

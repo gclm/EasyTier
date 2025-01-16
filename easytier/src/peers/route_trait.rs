@@ -1,9 +1,13 @@
 use std::{net::Ipv4Addr, sync::Arc};
 
-use async_trait::async_trait;
-use tokio_util::bytes::Bytes;
+use dashmap::DashMap;
 
-use crate::common::{error::Error, PeerId};
+use crate::{
+    common::{global_ctx::NetworkIdentity, PeerId},
+    proto::peer_rpc::{
+        ForeignNetworkRouteInfoEntry, ForeignNetworkRouteInfoKey, RouteForeignNetworkInfos,
+    },
+};
 
 #[derive(Clone, Debug)]
 pub enum NextHopPolicy {
@@ -17,16 +21,16 @@ impl Default for NextHopPolicy {
     }
 }
 
-#[async_trait]
+pub type ForeignNetworkRouteInfoMap =
+    DashMap<ForeignNetworkRouteInfoKey, ForeignNetworkRouteInfoEntry>;
+
+#[async_trait::async_trait]
 pub trait RouteInterface {
     async fn list_peers(&self) -> Vec<PeerId>;
-    async fn send_route_packet(
-        &self,
-        msg: Bytes,
-        route_id: u8,
-        dst_peer_id: PeerId,
-    ) -> Result<(), Error>;
     fn my_peer_id(&self) -> PeerId;
+    async fn list_foreign_networks(&self) -> ForeignNetworkRouteInfoMap {
+        DashMap::new()
+    }
 }
 
 pub type RouteInterfaceBox = Box<dyn RouteInterface + Send + Sync>;
@@ -56,7 +60,7 @@ impl RouteCostCalculatorInterface for DefaultRouteCostCalculator {}
 
 pub type RouteCostCalculator = Box<dyn RouteCostCalculatorInterface>;
 
-#[async_trait]
+#[async_trait::async_trait]
 #[auto_impl::auto_impl(Box, Arc)]
 pub trait Route {
     async fn open(&self, interface: RouteInterfaceBox) -> Result<u8, ()>;
@@ -71,10 +75,21 @@ pub trait Route {
         self.get_next_hop(peer_id).await
     }
 
-    async fn list_routes(&self) -> Vec<crate::rpc::Route>;
+    async fn list_routes(&self) -> Vec<crate::proto::cli::Route>;
 
     async fn get_peer_id_by_ipv4(&self, _ipv4: &Ipv4Addr) -> Option<PeerId> {
         None
+    }
+
+    async fn list_peers_own_foreign_network(
+        &self,
+        _network_identity: &NetworkIdentity,
+    ) -> Vec<PeerId> {
+        vec![]
+    }
+
+    async fn list_foreign_network_info(&self) -> RouteForeignNetworkInfos {
+        Default::default()
     }
 
     async fn set_route_cost_fn(&self, _cost_fn: RouteCostCalculator) {}

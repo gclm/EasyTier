@@ -1,24 +1,25 @@
-import type { NetworkConfig, NetworkInstance, NetworkInstanceRunningInfo } from '~/types/network'
-import { DEFAULT_NETWORK_CONFIG } from '~/types/network'
+import { NetworkTypes } from 'easytier-frontend-lib'
 
 export const useNetworkStore = defineStore('networkStore', {
   state: () => {
-    const networkList = [DEFAULT_NETWORK_CONFIG()]
+    const networkList = [NetworkTypes.DEFAULT_NETWORK_CONFIG()]
     return {
       // for initially empty lists
-      networkList: networkList as NetworkConfig[],
+      networkList: networkList as NetworkTypes.NetworkConfig[],
       // for data that is not yet loaded
       curNetwork: networkList[0],
 
       // uuid -> instance
-      instances: {} as Record<string, NetworkInstance>,
+      instances: {} as Record<string, NetworkTypes.NetworkInstance>,
 
-      networkInfos: {} as Record<string, NetworkInstanceRunningInfo>,
+      networkInfos: {} as Record<string, NetworkTypes.NetworkInstanceRunningInfo>,
+
+      autoStartInstIds: [] as string[],
     }
   },
 
   getters: {
-    lastNetwork(): NetworkConfig {
+    lastNetwork(): NetworkTypes.NetworkConfig {
       return this.networkList[this.networkList.length - 1]
     },
 
@@ -26,7 +27,7 @@ export const useNetworkStore = defineStore('networkStore', {
       return this.curNetwork.instance_id
     },
 
-    networkInstances(): Array<NetworkInstance> {
+    networkInstances(): Array<NetworkTypes.NetworkInstance> {
       return Object.values(this.instances)
     },
 
@@ -37,7 +38,7 @@ export const useNetworkStore = defineStore('networkStore', {
 
   actions: {
     addNewNetwork() {
-      this.networkList.push(DEFAULT_NETWORK_CONFIG())
+      this.networkList.push(NetworkTypes.DEFAULT_NETWORK_CONFIG())
     },
 
     delCurNetwork() {
@@ -64,7 +65,7 @@ export const useNetworkStore = defineStore('networkStore', {
       this.instances = {}
     },
 
-    updateWithNetworkInfos(networkInfos: Record<string, NetworkInstanceRunningInfo>) {
+    updateWithNetworkInfos(networkInfos: Record<string, NetworkTypes.NetworkInstanceRunningInfo>) {
       this.networkInfos = networkInfos
       for (const [instanceId, info] of Object.entries(networkInfos)) {
         if (this.instances[instanceId] === undefined)
@@ -74,45 +75,61 @@ export const useNetworkStore = defineStore('networkStore', {
         this.instances[instanceId].error_msg = info.error_msg || ''
         this.instances[instanceId].detail = info
       }
-      this.saveRunningInstanceIdsToLocalStorage()
     },
 
     loadFromLocalStorage() {
-      let networkList: NetworkConfig[]
+      let networkList: NetworkTypes.NetworkConfig[]
 
       // if localStorage default is [{}], instanceId will be undefined
       networkList = JSON.parse(localStorage.getItem('networkList') || '[]')
       networkList = networkList.map((cfg) => {
-        return { ...DEFAULT_NETWORK_CONFIG(), ...cfg } as NetworkConfig
+        return { ...NetworkTypes.DEFAULT_NETWORK_CONFIG(), ...cfg } as NetworkTypes.NetworkConfig
       })
 
       // prevent a empty list from localStorage, should not happen
       if (networkList.length === 0)
-        networkList = [DEFAULT_NETWORK_CONFIG()]
+        networkList = [NetworkTypes.DEFAULT_NETWORK_CONFIG()]
 
       this.networkList = networkList
       this.curNetwork = this.networkList[0]
+
+      this.loadAutoStartInstIdsFromLocalStorage()
     },
 
     saveToLocalStorage() {
       localStorage.setItem('networkList', JSON.stringify(this.networkList))
     },
 
-    saveRunningInstanceIdsToLocalStorage() {
-      let instance_ids = Object.keys(this.instances).filter((instanceId) => this.instances[instanceId].running)
-      localStorage.setItem('runningInstanceIds', JSON.stringify(instance_ids))
-    }
+    saveAutoStartInstIdsToLocalStorage() {
+      localStorage.setItem('autoStartInstIds', JSON.stringify(this.autoStartInstIds))
+    },
+
+    loadAutoStartInstIdsFromLocalStorage() {
+      try {
+        this.autoStartInstIds = JSON.parse(localStorage.getItem('autoStartInstIds') || '[]')
+      }
+      catch (e) {
+        console.error(e)
+        this.autoStartInstIds = []
+      }
+    },
+
+    addAutoStartInstId(instanceId: string) {
+      if (!this.autoStartInstIds.includes(instanceId)) {
+        this.autoStartInstIds.push(instanceId)
+      }
+      this.saveAutoStartInstIdsToLocalStorage()
+    },
+
+    removeAutoStartInstId(instanceId: string) {
+      const idx = this.autoStartInstIds.indexOf(instanceId)
+      if (idx !== -1) {
+        this.autoStartInstIds.splice(idx, 1)
+      }
+      this.saveAutoStartInstIdsToLocalStorage()
+    },
   },
 })
 
 if (import.meta.hot)
   import.meta.hot.accept(acceptHMRUpdate(useNetworkStore as any, import.meta.hot))
-
-export function loadRunningInstanceIdsFromLocalStorage(): string[] {
-  try {
-    return JSON.parse(localStorage.getItem('runningInstanceIds') || '[]')
-  } catch (e) {
-    console.error(e)
-    return []
-  }
-}

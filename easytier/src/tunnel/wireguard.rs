@@ -20,13 +20,11 @@ use futures::{stream::FuturesUnordered, SinkExt, StreamExt};
 use rand::RngCore;
 use tokio::{net::UdpSocket, sync::Mutex, task::JoinSet};
 
-use crate::{
-    rpc::TunnelInfo,
-    tunnel::{
-        build_url_from_socket_addr,
-        common::TunnelWrapper,
-        packet_def::{ZCPacket, WG_TUNNEL_HEADER_SIZE},
-    },
+use super::TunnelInfo;
+use crate::tunnel::{
+    build_url_from_socket_addr,
+    common::TunnelWrapper,
+    packet_def::{ZCPacket, WG_TUNNEL_HEADER_SIZE},
 };
 
 use super::{
@@ -522,12 +520,16 @@ impl WgTunnelListener {
                     sink,
                     Some(TunnelInfo {
                         tunnel_type: "wg".to_owned(),
-                        local_addr: build_url_from_socket_addr(
-                            &socket.local_addr().unwrap().to_string(),
-                            "wg",
-                        )
-                        .into(),
-                        remote_addr: build_url_from_socket_addr(&addr.to_string(), "wg").into(),
+                        local_addr: Some(
+                            build_url_from_socket_addr(
+                                &socket.local_addr().unwrap().to_string(),
+                                "wg",
+                            )
+                            .into(),
+                        ),
+                        remote_addr: Some(
+                            build_url_from_socket_addr(&addr.to_string(), "wg").into(),
+                        ),
                     }),
                 ));
                 if let Err(e) = conn_sender.send(tunnel) {
@@ -634,7 +636,14 @@ impl WgTunnelConnector {
         let handshake = wg_peer.create_handshake_init().await;
         udp.send_to(&handshake, addr).await?;
         let mut buf = [0u8; MAX_PACKET];
-        let (n, recv_addr) = udp.recv_from(&mut buf).await.unwrap();
+        let (n, recv_addr) = match udp.recv_from(&mut buf).await {
+            Ok(ret) => ret,
+            Err(e) => {
+                tracing::error!("Failed to receive handshake response: {}", e);
+                return Err(TunnelError::IOError(e));
+            }
+        };
+
         if recv_addr != addr {
             tracing::warn!(?recv_addr, "Received packet from changed address");
         }
@@ -646,7 +655,13 @@ impl WgTunnelConnector {
             data.handle_one_packet_from_peer(&mut sink, &buf[..n]).await;
             loop {
                 let mut buf = vec![0u8; MAX_PACKET];
-                let (n, _) = data.udp.recv_from(&mut buf).await.unwrap();
+                let (n, _) = match udp.recv_from(&mut buf).await {
+                    Ok(ret) => ret,
+                    Err(e) => {
+                        tracing::error!("Failed to receive wg packet: {}", e);
+                        break;
+                    }
+                };
                 data.handle_one_packet_from_peer(&mut sink, &buf[..n]).await;
             }
         });
@@ -657,8 +672,8 @@ impl WgTunnelConnector {
             sink,
             Some(TunnelInfo {
                 tunnel_type: "wg".to_owned(),
-                local_addr: super::build_url_from_socket_addr(&local_addr, "wg").into(),
-                remote_addr: addr_url.to_string(),
+                local_addr: Some(super::build_url_from_socket_addr(&local_addr, "wg").into()),
+                remote_addr: Some(addr_url.into()),
             }),
             Some(Box::new(wg_peer)),
         ));
@@ -707,8 +722,17 @@ impl super::TunnelConnector for WgTunnelConnector {
                 socket2::Type::DGRAM,
                 Some(socket2::Protocol::UDP),
             )?;
-            setup_sokcet2(&socket2_socket, &bind_addr)?;
-            let socket = UdpSocket::from_std(socket2_socket.into())?;
+            if let Err(e) = setup_sokcet2(&socket2_socket, &bind_addr) {
+                tracing::error!(bind_addr = ?bind_addr, ?addr, "bind addr fail: {:?}", e);
+                continue;
+            }
+            let socket = match UdpSocket::from_std(socket2_socket.into()) {
+                Ok(s) => s,
+                Err(e) => {
+                    tracing::error!(bind_addr = ?bind_addr, ?addr, "create udp socket fail: {:?}", e);
+                    continue;
+                }
+            };
             tracing::info!(?bind_addr, ?self.addr, "prepare wg connect task");
             futures.push(Self::connect_with_socket(
                 self.addr.clone(),
@@ -871,14 +895,14 @@ pub mod tests {
         let (server_cfg, client_cfg) = create_wg_config();
         let listener = WgTunnelListener::new("wg://[::1]:31016".parse().unwrap(), server_cfg);
         let mut connector =
-            WgTunnelConnector::new("wg://test.kkrainbow.top:31016".parse().unwrap(), client_cfg);
+            WgTunnelConnector::new("wg://test.easytier.top:31016".parse().unwrap(), client_cfg);
         connector.set_ip_version(IpVersion::V6);
         _tunnel_pingpong(listener, connector).await;
 
         let (server_cfg, client_cfg) = create_wg_config();
         let listener = WgTunnelListener::new("wg://127.0.0.1:31016".parse().unwrap(), server_cfg);
         let mut connector =
-            WgTunnelConnector::new("wg://test.kkrainbow.top:31016".parse().unwrap(), client_cfg);
+            WgTunnelConnector::new("wg://test.easytier.top:31016".parse().unwrap(), client_cfg);
         connector.set_ip_version(IpVersion::V4);
         _tunnel_pingpong(listener, connector).await;
     }

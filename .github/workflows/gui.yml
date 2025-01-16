@@ -2,7 +2,7 @@ name: EasyTier GUI
 
 on:
   push:
-    branches: ["develop", "main"]
+    branches: ["develop", "main", "releases/**"]
   pull_request:
     branches: ["develop", "main"]
       
@@ -20,37 +20,49 @@ jobs:
     runs-on: ubuntu-latest
     # Map a step output to a job output
     outputs:
-      should_skip: ${{ steps.skip_check.outputs.should_skip }}
+      should_skip: ${{ steps.skip_check.outputs.should_skip == 'true' && !startsWith(github.ref_name, 'releases/') }}
     steps:
       - id: skip_check
         uses: fkirc/skip-duplicate-actions@v5
         with:
           # All of these options are optional, so you can remove them if you are happy with the defaults
-          concurrent_skipping: 'never'
+          concurrent_skipping: 'same_content_newer'
           skip_after_successful_duplicate: 'true'
-          paths: '["Cargo.toml", "Cargo.lock", "easytier/**", "easytier-gui/**", ".github/workflows/gui.yml"]'
+          cancel_others: 'true'
+          paths: '["Cargo.toml", "Cargo.lock", "easytier/**", "easytier-gui/**", ".github/workflows/gui.yml", ".github/workflows/install_rust.sh"]'
   build-gui:
     strategy:
       fail-fast: false
       matrix:
         include:
           - TARGET: aarch64-unknown-linux-musl
-            OS: ubuntu-latest
+            OS: ubuntu-22.04
             GUI_TARGET: aarch64-unknown-linux-gnu
+            ARTIFACT_NAME: linux-aarch64
           - TARGET: x86_64-unknown-linux-musl
-            OS: ubuntu-latest
+            OS: ubuntu-22.04
             GUI_TARGET: x86_64-unknown-linux-gnu
+            ARTIFACT_NAME: linux-x86_64
 
           - TARGET: x86_64-apple-darwin
             OS: macos-latest
             GUI_TARGET: x86_64-apple-darwin
+            ARTIFACT_NAME: macos-x86_64
           - TARGET: aarch64-apple-darwin
             OS: macos-latest
             GUI_TARGET: aarch64-apple-darwin
+            ARTIFACT_NAME: macos-aarch64
 
           - TARGET: x86_64-pc-windows-msvc
             OS: windows-latest
             GUI_TARGET: x86_64-pc-windows-msvc
+            ARTIFACT_NAME: windows-x86_64
+
+          - TARGET: aarch64-pc-windows-msvc
+            OS: windows-latest
+            GUI_TARGET: aarch64-pc-windows-msvc
+            ARTIFACT_NAME: windows-arm64
+
     runs-on: ${{ matrix.OS }}
     env:
       NAME: easytier
@@ -62,6 +74,10 @@ jobs:
     if: needs.pre_job.outputs.should_skip != 'true'    
     steps:
       - uses: actions/checkout@v3
+
+      - name: Set current ref as env variable
+        run: |
+          echo "GIT_DESC=$(git log -1 --format=%cd.%h --date=format:%Y-%m-%d_%H:%M:%S)" >> $GITHUB_ENV
 
       - uses: actions/setup-node@v4
         with:
@@ -88,8 +104,8 @@ jobs:
 
       - name: Install frontend dependencies
         run: |
-          (cd easytier-gui; pnpm install)
-          (cd tauri-plugin-vpnservice; pnpm install; pnpm build)
+          pnpm -r install
+          pnpm -r build
 
       - name: Cargo cache
         uses: actions/cache@v4
@@ -135,12 +151,21 @@ jobs:
           echo "deb [arch=armhf,arm64] http://ports.ubuntu.com/ubuntu-ports jammy-security multiverse" | sudo tee -a /etc/apt/sources.list
 
           sudo dpkg --add-architecture arm64
-          sudo apt-get update && sudo apt-get upgrade -y
-          sudo apt install gcc-aarch64-linux-gnu
-          sudo apt install libwebkit2gtk-4.1-dev:arm64
-          sudo apt install libssl-dev:arm64
+          sudo apt-get update
+          sudo apt-get install -y libgstreamer1.0-0:arm64 gstreamer1.0-plugins-base:arm64 gstreamer1.0-plugins-good:arm64 
+          sudo apt-get install -y libgstreamer-gl1.0-0:arm64 libgstreamer-plugins-base1.0-0:arm64 libgstreamer-plugins-good1.0-0:arm64 libwebkit2gtk-4.1-0:arm64
+          sudo apt install -f -o Dpkg::Options::="--force-overwrite" libwebkit2gtk-4.1-dev:arm64 libssl-dev:arm64 gcc-aarch64-linux-gnu
           echo "PKG_CONFIG_SYSROOT_DIR=/usr/aarch64-linux-gnu/" >> "$GITHUB_ENV"
           echo "PKG_CONFIG_PATH=/usr/lib/aarch64-linux-gnu/pkgconfig/" >> "$GITHUB_ENV"
+
+      - name: copy correct DLLs
+        if: ${{ matrix.OS == 'windows-latest' }}
+        run: |
+          if [[ $GUI_TARGET =~ ^aarch64.*$ ]]; then
+            cp ./easytier/third_party/arm64/*.dll ./easytier-gui/src-tauri/
+          else
+            cp ./easytier/third_party/*.dll ./easytier-gui/src-tauri/
+          fi
 
       - name: Build GUI
         if: ${{ matrix.GUI_TARGET != '' }}
@@ -148,7 +173,7 @@ jobs:
         with:
           projectPath: ./easytier-gui
           # https://tauri.app/v1/guides/building/linux/#cross-compiling-tauri-applications-for-arm-based-devices
-          args: --verbose --target ${{ matrix.GUI_TARGET }} ${{ matrix.OS == 'ubuntu-latest' && contains(matrix.TARGET, 'aarch64') && '--bundles deb' || ''  }}
+          args: --verbose --target ${{ matrix.GUI_TARGET }} ${{ matrix.OS == 'ubuntu-22.04' && contains(matrix.TARGET, 'aarch64') && '--bundles deb' || ''  }}
 
       - name: Compress
         run: |
@@ -172,13 +197,13 @@ jobs:
               fi
           fi
 
-          tar -cvf ./artifacts/$NAME-$TARGET-$TAG.tar -C ./artifacts/objects/ .
+          mv ./artifacts/objects/* ./artifacts/
           rm -rf ./artifacts/objects/
 
       - name: Archive artifact
         uses: actions/upload-artifact@v4
         with:
-          name: easytier-gui-${{ matrix.OS }}-${{ matrix.TARGET }}
+          name: easytier-gui-${{ matrix.ARTIFACT_NAME }}
           path: |
             ./artifacts/*
 
@@ -191,7 +216,7 @@ jobs:
           endpoint: ${{ secrets.ALIYUN_OSS_ENDPOINT }}
           bucket: ${{ secrets.ALIYUN_OSS_BUCKET }}
           local-path: ./artifacts/
-          remote-path: /easytier-releases/${{ github.sha }}/gui
+          remote-path: /easytier-releases/${{env.GIT_DESC}}/easytier-gui-${{ matrix.ARTIFACT_NAME }}
           no-delete-remote-files: true
           retry: 5
   gui-result:

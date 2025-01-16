@@ -1,11 +1,13 @@
 use std::{
     fmt::Debug,
     future,
+    io::Write as _,
     sync::{Arc, Mutex},
 };
 use tokio::task::JoinSet;
 use tracing::Instrument;
 
+pub mod compressor;
 pub mod config;
 pub mod constants;
 pub mod defer;
@@ -14,6 +16,7 @@ pub mod global_ctx;
 pub mod ifcfg;
 pub mod netns;
 pub mod network;
+pub mod scoped_task;
 pub mod stun;
 pub mod stun_codec_ext;
 
@@ -54,7 +57,6 @@ pub fn join_joinset_background<T: Debug + Send + Sync + 'static>(
                 }
 
                 future::poll_fn(|cx| {
-                    tracing::debug!("try join joinset tasks");
                     let Some(js) = js.upgrade() else {
                         return std::task::Poll::Ready(());
                     };
@@ -77,6 +79,55 @@ pub fn join_joinset_background<T: Debug + Send + Sync + 'static>(
             origin = origin
         )),
     );
+}
+
+pub fn get_machine_id() -> uuid::Uuid {
+    // a path same as the binary
+    let machine_id_file = std::env::current_exe()
+        .map(|x| x.with_file_name("et_machine_id"))
+        .unwrap_or_else(|_| std::path::PathBuf::from("et_machine_id"));
+
+    // try load from local file
+    if let Ok(mid) = std::fs::read_to_string(&machine_id_file) {
+        if let Ok(mid) = uuid::Uuid::parse_str(mid.trim()) {
+            return mid;
+        }
+    }
+
+    #[cfg(any(
+        target_os = "linux",
+        target_os = "macos",
+        target_os = "windows",
+        target_os = "freebsd"
+    ))]
+    let gen_mid = machine_uid::get()
+        .map(|x| {
+            let mut b = [0u8; 16];
+            crate::tunnel::generate_digest_from_str("", x.as_str(), &mut b);
+            uuid::Uuid::from_bytes(b)
+        })
+        .ok();
+
+    #[cfg(not(any(
+        target_os = "linux",
+        target_os = "macos",
+        target_os = "windows",
+        target_os = "freebsd"
+    )))]
+    let gen_mid = None;
+
+    if gen_mid.is_some() {
+        return gen_mid.unwrap();
+    }
+
+    let gen_mid = uuid::Uuid::new_v4();
+
+    // try save to local file
+    if let Ok(mut file) = std::fs::File::create(machine_id_file) {
+        let _ = file.write_all(gen_mid.to_string().as_bytes());
+    }
+
+    gen_mid
 }
 
 #[cfg(test)]

@@ -1,14 +1,18 @@
-use std::{net::SocketAddr, sync::Arc};
+use std::{net::SocketAddr, sync::Arc, time::Duration};
 
 use anyhow::Context;
 use bytes::BytesMut;
 use futures::{stream::FuturesUnordered, SinkExt, StreamExt};
-use tokio::net::{TcpListener, TcpSocket, TcpStream};
+use tokio::{
+    net::{TcpListener, TcpSocket, TcpStream},
+    time::timeout,
+};
 use tokio_rustls::TlsAcceptor;
 use tokio_websockets::{ClientBuilder, Limits, MaybeTlsStream, Message};
 use zerocopy::AsBytes;
 
-use crate::{rpc::TunnelInfo, tunnel::insecure_tls::get_insecure_tls_client_config};
+use super::TunnelInfo;
+use crate::tunnel::insecure_tls::get_insecure_tls_client_config;
 
 use super::{
     common::{setup_sokcet2, wait_for_connect_futures, TunnelWrapper},
@@ -72,12 +76,14 @@ impl WSTunnelListener {
     async fn try_accept(&mut self, stream: TcpStream) -> Result<Box<dyn Tunnel>, TunnelError> {
         let info = TunnelInfo {
             tunnel_type: self.addr.scheme().to_owned(),
-            local_addr: self.local_url().into(),
-            remote_addr: super::build_url_from_socket_addr(
-                &stream.peer_addr()?.to_string(),
-                self.addr.scheme().to_string().as_str(),
-            )
-            .into(),
+            local_addr: Some(self.local_url().into()),
+            remote_addr: Some(
+                super::build_url_from_socket_addr(
+                    &stream.peer_addr()?.to_string(),
+                    self.addr.scheme().to_string().as_str(),
+                )
+                .into(),
+            ),
         };
 
         let server_bulder = tokio_websockets::ServerBuilder::new().limits(Limits::unlimited());
@@ -138,9 +144,9 @@ impl TunnelListener for WSTunnelListener {
             // only fail on tcp accept error
             let (stream, _) = listener.accept().await?;
             stream.set_nodelay(true).unwrap();
-            match self.try_accept(stream).await {
-                Ok(tunnel) => return Ok(tunnel),
-                Err(e) => {
+            match timeout(Duration::from_secs(3), self.try_accept(stream)).await {
+                Ok(Ok(tunnel)) => return Ok(tunnel),
+                e => {
                     tracing::error!(?e, ?self, "Failed to accept ws/wss tunnel");
                     continue;
                 }
@@ -182,12 +188,14 @@ impl WSTunnelConnector {
 
         let info = TunnelInfo {
             tunnel_type: addr.scheme().to_owned(),
-            local_addr: super::build_url_from_socket_addr(
-                &stream.local_addr()?.to_string(),
-                addr.scheme().to_string().as_str(),
-            )
-            .into(),
-            remote_addr: addr.to_string(),
+            local_addr: Some(
+                super::build_url_from_socket_addr(
+                    &stream.local_addr()?.to_string(),
+                    addr.scheme().to_string().as_str(),
+                )
+                .into(),
+            ),
+            remote_addr: Some(addr.clone().into()),
         };
 
         let c = ClientBuilder::from_uri(http::Uri::try_from(addr.to_string()).unwrap());
@@ -236,7 +244,11 @@ impl WSTunnelConnector {
                 socket2::Type::STREAM,
                 Some(socket2::Protocol::TCP),
             )?;
-            setup_sokcet2(&socket2_socket, bind_addr)?;
+
+            if let Err(e) = setup_sokcet2(&socket2_socket, bind_addr) {
+                tracing::error!(bind_addr = ?bind_addr, ?addr, "bind addr fail: {:?}", e);
+                continue;
+            }
 
             let socket = TcpSocket::from_std_stream(socket2_socket.into());
             futures.push(Self::connect_with(

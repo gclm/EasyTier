@@ -4,12 +4,10 @@
 
 use std::{error::Error, net::SocketAddr, sync::Arc};
 
-use crate::{
-    rpc::TunnelInfo,
-    tunnel::{
-        check_scheme_and_get_socket_addr_ext,
-        common::{FramedReader, FramedWriter, TunnelWrapper},
-    },
+use crate::tunnel::{
+    check_scheme_and_get_socket_addr_ext,
+    common::{FramedReader, FramedWriter, TunnelWrapper},
+    TunnelInfo,
 };
 use anyhow::Context;
 use quinn::{crypto::rustls::QuicClientConfig, ClientConfig, Connection, Endpoint, ServerConfig};
@@ -113,8 +111,10 @@ impl TunnelListener for QUICTunnelListener {
 
         let info = TunnelInfo {
             tunnel_type: "quic".to_owned(),
-            local_addr: self.local_url().into(),
-            remote_addr: super::build_url_from_socket_addr(&remote_addr.to_string(), "quic").into(),
+            local_addr: Some(self.local_url().into()),
+            remote_addr: Some(
+                super::build_url_from_socket_addr(&remote_addr.to_string(), "quic").into(),
+            ),
         };
 
         Ok(Box::new(TunnelWrapper::new(
@@ -177,8 +177,10 @@ impl TunnelConnector for QUICTunnelConnector {
 
         let info = TunnelInfo {
             tunnel_type: "quic".to_owned(),
-            local_addr: super::build_url_from_socket_addr(&local_addr.to_string(), "quic").into(),
-            remote_addr: self.addr.to_string(),
+            local_addr: Some(
+                super::build_url_from_socket_addr(&local_addr.to_string(), "quic").into(),
+            ),
+            remote_addr: Some(self.addr.clone().into()),
         };
 
         let arc_conn = Arc::new(ConnWrapper { conn: connection });
@@ -232,13 +234,13 @@ mod tests {
     async fn ipv6_domain_pingpong() {
         let listener = QUICTunnelListener::new("quic://[::1]:31016".parse().unwrap());
         let mut connector =
-            QUICTunnelConnector::new("quic://test.kkrainbow.top:31016".parse().unwrap());
+            QUICTunnelConnector::new("quic://test.easytier.top:31016".parse().unwrap());
         connector.set_ip_version(IpVersion::V6);
         _tunnel_pingpong(listener, connector).await;
 
         let listener = QUICTunnelListener::new("quic://127.0.0.1:31016".parse().unwrap());
         let mut connector =
-            QUICTunnelConnector::new("quic://test.kkrainbow.top:31016".parse().unwrap());
+            QUICTunnelConnector::new("quic://test.easytier.top:31016".parse().unwrap());
         connector.set_ip_version(IpVersion::V4);
         _tunnel_pingpong(listener, connector).await;
     }
