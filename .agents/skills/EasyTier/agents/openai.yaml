@@ -1,0 +1,6 @@
+interface:
+  display_name: "EasyTier"
+  short_description: "Repo-specific patterns and workflows for EasyTier"
+  default_prompt: "Use the EasyTier repo skill to follow existing architecture, testing, and workflow conventions."
+policy:
+  allow_implicit_invocation: true
