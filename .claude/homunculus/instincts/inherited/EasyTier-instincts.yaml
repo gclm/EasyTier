@@ -1,0 +1,338 @@
+# Instincts generated from https://github.com/gclm/EasyTier
+# Generated: 2026-05-01T06:09:38.671Z
+# Version: 2.0
+# NOTE: This file supplements (does not replace) any existing curated instincts.
+# High-confidence manually curated instincts should be preserved alongside these.
+
+---
+id: EasyTier-commit-conventional
+trigger: "when writing a commit message"
+confidence: 0.85
+domain: git
+source: repo-analysis
+source_repo: https://github.com/gclm/EasyTier
+---
+
+# EasyTier Commit Conventional
+
+## Action
+
+Use conventional commit format with prefixes: fix, feat
+
+## Evidence
+
+- 2 commits analyzed
+- Detected conventional commit pattern
+- Examples: fix: protect self peer during credential refresh and allow need-p2p peers through public server (#2192), feat(gui): add UPnP and public IPv6 advanced options (#2194)
+
+---
+id: EasyTier-commit-length
+trigger: "when writing a commit message"
+confidence: 0.6
+domain: git
+source: repo-analysis
+source_repo: https://github.com/gclm/EasyTier
+---
+
+# EasyTier Commit Length
+
+## Action
+
+Write moderate-length commit messages (~82 characters)
+
+## Evidence
+
+- Average commit message length: 82 chars
+- Based on 2 commits
+
+---
+id: EasyTier-naming-files
+trigger: "when creating a new file"
+confidence: 0.8
+domain: code-style
+source: repo-analysis
+source_repo: https://github.com/gclm/EasyTier
+---
+
+# EasyTier Naming Files
+
+## Action
+
+Use camelCase naming convention
+
+## Evidence
+
+- Analyzed file naming patterns in repository
+- Dominant pattern: camelCase
+
+---
+id: EasyTier-import-relative
+trigger: "when importing modules"
+confidence: 0.75
+domain: code-style
+source: repo-analysis
+source_repo: https://github.com/gclm/EasyTier
+---
+
+# EasyTier Import Relative
+
+## Action
+
+Use relative imports for project files
+
+## Evidence
+
+- Import analysis shows relative import pattern
+- Example: import { x } from '../lib/x'
+
+---
+id: EasyTier-export-style
+trigger: "when exporting from a module"
+confidence: 0.7
+domain: code-style
+source: repo-analysis
+source_repo: https://github.com/gclm/EasyTier
+---
+
+# EasyTier Export Style
+
+## Action
+
+Prefer named exports
+
+## Evidence
+
+- Export pattern analysis
+- Dominant style: named
+
+---
+id: EasyTier-arch-type-based
+trigger: "when adding new code"
+confidence: 0.8
+domain: architecture
+source: repo-analysis
+source_repo: https://github.com/gclm/EasyTier
+---
+
+# EasyTier Arch Type Based
+
+## Action
+
+Place code in the appropriate type folder (components/, services/, utils/, etc.)
+
+## Evidence
+
+- Type-based module organization detected
+- Folders: 
+
+---
+id: easytier-instinct-camelcase-func
+trigger: "When naming a function"
+confidence: 0.9
+domain: code-style
+source: repo-analysis
+source_repo: gclm/EasyTier
+---
+
+# Easytier Instinct Camelcase Func
+
+## Action
+
+Use camelCase for the function name
+
+## Evidence
+
+- Pattern in codeStyle.namingConventions.functions
+
+---
+id: easytier-instinct-camelcase-files
+trigger: "When naming a file"
+confidence: 0.8
+domain: code-style
+source: repo-analysis
+source_repo: gclm/EasyTier
+---
+
+# Easytier Instinct Camelcase Files
+
+## Action
+
+Use camelCase for the file name
+
+## Evidence
+
+- Pattern in codeStyle.namingConventions.files
+
+---
+id: easytier-instinct-pascalcase-class
+trigger: "When naming a class or struct"
+confidence: 0.9
+domain: code-style
+source: repo-analysis
+source_repo: gclm/EasyTier
+---
+
+# Easytier Instinct Pascalcase Class
+
+## Action
+
+Use PascalCase for the class or struct name
+
+## Evidence
+
+- Pattern in codeStyle.namingConventions.classes
+
+---
+id: easytier-instinct-screaming-const
+trigger: "When naming a constant"
+confidence: 0.9
+domain: code-style
+source: repo-analysis
+source_repo: gclm/EasyTier
+---
+
+# Easytier Instinct Screaming Const
+
+## Action
+
+Use SCREAMING_SNAKE_CASE for the constant name
+
+## Evidence
+
+- Pattern in codeStyle.namingConventions.constants
+
+---
+id: easytier-instinct-relative-import
+trigger: "When importing modules"
+confidence: 0.8
+domain: code-style
+source: repo-analysis
+source_repo: gclm/EasyTier
+---
+
+# Easytier Instinct Relative Import
+
+## Action
+
+Use relative import paths
+
+## Evidence
+
+- Pattern in codeStyle.importStyle
+
+---
+id: easytier-instinct-named-export
+trigger: "When exporting modules or functions"
+confidence: 0.8
+domain: code-style
+source: repo-analysis
+source_repo: gclm/EasyTier
+---
+
+# Easytier Instinct Named Export
+
+## Action
+
+Use named exports
+
+## Evidence
+
+- Pattern in codeStyle.exportStyle
+
+---
+id: easytier-instinct-conventional-commit
+trigger: "When writing a commit message"
+confidence: 0.9
+domain: git
+source: repo-analysis
+source_repo: gclm/EasyTier
+---
+
+# Easytier Instinct Conventional Commit
+
+## Action
+
+Use conventional commit prefixes such as 'fix' or 'feat'
+
+## Evidence
+
+- Seen in commit: fix: protect self peer during credential refresh and allow need-p2p peers through public server (#2192)
+- Seen in commit: feat(gui): add UPnP and public IPv6 advanced options (#2194)
+
+---
+id: easytier-instinct-commit-length
+trigger: "When writing a commit message"
+confidence: 0.7
+domain: git
+source: repo-analysis
+source_repo: gclm/EasyTier
+---
+
+# Easytier Instinct Commit Length
+
+## Action
+
+Keep the commit message concise, around 80 characters
+
+## Evidence
+
+- Pattern in commits.averageLength
+
+---
+id: easytier-instinct-test-location-mixed
+trigger: "When adding tests"
+confidence: 0.7
+domain: testing
+source: repo-analysis
+source_repo: gclm/EasyTier
+---
+
+# Easytier Instinct Test Location Mixed
+
+## Action
+
+Place test files alongside source files (mixed location)
+
+## Evidence
+
+- Pattern in architecture.folderStructure.testLocation
+
+---
+id: easytier-instinct-type-based-modules
+trigger: "When organizing modules"
+confidence: 0.8
+domain: architecture
+source: repo-analysis
+source_repo: gclm/EasyTier
+---
+
+# Easytier Instinct Type Based Modules
+
+## Action
+
+Group modules by type (e.g., gui, web, contrib)
+
+## Evidence
+
+- Pattern in architecture.moduleOrganization
+- Folders: easytier-web, easytier-gui, easytier-contrib
+
+---
+id: easytier-instinct-single-package
+trigger: "When structuring the repository"
+confidence: 0.8
+domain: architecture
+source: repo-analysis
+source_repo: gclm/EasyTier
+---
+
+# Easytier Instinct Single Package
+
+## Action
+
+Maintain a single-package structure
+
+## Evidence
+
+- Pattern in architecture.folderStructure.type
+
